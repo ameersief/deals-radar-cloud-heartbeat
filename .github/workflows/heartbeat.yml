@@ -1,0 +1,38 @@
+name: 24/7 Cloud Heartbeat & Deals Trigger
+
+on:
+  schedule:
+    # Run every 10 minutes to keep Render alive 24/7 without ever sleeping
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    name: Ping Render & Verify Engine
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Keep Render Awake (Healthcheck Ping)
+        run: |
+          echo "Pinging Render n8n healthz endpoint..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 30 "https://n8n-service-kgny.onrender.com/healthz" || true)
+          echo "Render Healthcheck HTTP Status: $HTTP_CODE"
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Wake-up ping sent (container might be spinning up)."
+          else
+            echo "Render container is alive and healthy!"
+          fi
+
+      - name: 2. Scheduled Deals Publisher Trigger (UAE Peak Hours)
+        run: |
+          CURRENT_HOUR=$(date -u +"%H")
+          CURRENT_MIN=$(date -u +"%M")
+          echo "Current UTC Time: $CURRENT_HOUR:$CURRENT_MIN"
+          
+          # Peak publishing slots in UTC: 04:00 (08:00 UAE), 08:00 (12:00 UAE), 12:00 (16:00 UAE), 16:00 (20:00 UAE)
+          if [[ ("$CURRENT_HOUR" == "04" || "$CURRENT_HOUR" == "08" || "$CURRENT_HOUR" == "12" || "$CURRENT_HOUR" == "16") && "$CURRENT_MIN" -lt 15 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Peak hour detected! Triggering Deals Publisher Webhook..."
+            PUBLISH_RES=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -m 60 "https://n8n-service-kgny.onrender.com/webhook/publish-deal" || true)
+            echo "Publisher response: $PUBLISH_RES"
+          else
+            echo "Heartbeat ping completed successfully (Interval keep-alive)."
+          fi
