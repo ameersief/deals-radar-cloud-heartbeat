@@ -22,17 +22,22 @@ jobs:
             echo "Render container is alive and healthy!"
           fi
 
-      - name: 2. Scheduled Deals Publisher Trigger (UAE Peak Hours)
+      - name: 2. Scheduled Deals Publisher Trigger (Dubai Daytime Golden Hours)
         run: |
           CURRENT_HOUR=$(date -u +"%H")
           CURRENT_MIN=$(date -u +"%M")
           echo "Current UTC Time: $CURRENT_HOUR:$CURRENT_MIN"
           
-          # Peak publishing slots in UTC: 04:00 (08:00 UAE), 08:00 (12:00 UAE), 12:00 (16:00 UAE), 16:00 (20:00 UAE)
-          if [[ ("$CURRENT_HOUR" == "04" || "$CURRENT_HOUR" == "08" || "$CURRENT_HOUR" == "12" || "$CURRENT_HOUR" == "16") && "$CURRENT_MIN" -lt 15 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Peak hour detected! Triggering Deals Publisher Webhook..."
+          # Dubai Daytime Golden Hours (GST = UTC+4):
+          # • 06:00 UTC = 10:00 AM Dubai (الصباح)
+          # • 10:00 UTC = 02:00 PM Dubai (استراحة الغداء)
+          # • 14:00 UTC = 06:00 PM Dubai (العصر ونهاية الدوام)
+          # • 17:00 UTC = 09:00 PM Dubai (السهرة والتسوق المسائي)
+          # NO publishing at dawn or late night (00:00 - 09:00 GST silent window)
+          if [[ ("$CURRENT_HOUR" == "06" || "$CURRENT_HOUR" == "10" || "$CURRENT_HOUR" == "14" || "$CURRENT_HOUR" == "17") && "$CURRENT_MIN" -lt 15 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Dubai Daytime Peak Hour Detected! Triggering Deals Publisher Webhook..."
             PUBLISH_RES=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -m 60 "https://n8n-service-kgny.onrender.com/webhook/publish-deal" || true)
             echo "Publisher response: $PUBLISH_RES"
           else
-            echo "Heartbeat ping completed successfully (Interval keep-alive)."
+            echo "Heartbeat ping completed successfully (Interval keep-alive - Non-publishing hour)."
           fi
