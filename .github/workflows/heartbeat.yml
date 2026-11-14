@@ -2,9 +2,15 @@ name: 24/7 Cloud Heartbeat & Live Deals Publisher
 
 on:
   schedule:
-    # Run every 10 minutes to keep Render alive 24/7
+    # Run every 10 minutes to maintain 24/7 cloud uptime and check publishing windows
     - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish wave regardless of window'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   heartbeat_and_publish:
@@ -20,50 +26,19 @@ jobs:
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 30 "https://n8n-service-kgny.onrender.com/healthz" || true)
           echo "Render Healthcheck HTTP Status: $HTTP_CODE"
 
-      - name: 2. Check Dubai Golden Hours (GST = UTC+4)
-        run: |
-          CURRENT_HOUR=$(date -u +"%H")
-          CURRENT_MIN=$(date -u +"%M")
-          echo "Current UTC Time: $CURRENT_HOUR:$CURRENT_MIN"
-          
-          # Dubai Daytime Golden Hours:
-          # • 06:00 UTC = 10:00 AM Dubai
-          # • 10:00 UTC = 02:00 PM Dubai
-          # • 14:00 UTC = 06:00 PM Dubai
-          # • 17:00 UTC = 09:00 PM Dubai
-          IS_PEAK="false"
-          if [[ ("$CURRENT_HOUR" == "06" || "$CURRENT_HOUR" == "10" || "$CURRENT_HOUR" == "14" || "$CURRENT_HOUR" == "17") && "$CURRENT_MIN" -lt 20 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Dubai Daytime Peak Hour Detected!"
-            IS_PEAK="true"
-          else
-            echo "Non-publishing interval keep-alive."
-          fi
-          echo "IS_PEAK=$IS_PEAK" >> $GITHUB_ENV
-
       - name: Set up Python for Live Deal Engine
-        if: env.IS_PEAK == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
-        if: env.IS_PEAK == 'true'
         run: |
           pip install -r requirements.txt
 
-      - name: 3. Hunt 100% Fresh Amazon.ae Deals & Update Neon DB
-        if: env.IS_PEAK == 'true'
+      - name: 2. Autonomous Intelligent Deals Publisher
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FORCE_PUBLISH: ${{ github.event.inputs.force_publish || 'false' }}
         run: |
-          echo "Starting Live Amazon.ae Deal Hunter..."
-          python daily_live_deal_hunter.py
-
-      - name: 4. Publish Fresh Wave Directly to Telegram (Zero-Failure Engine)
-        if: env.IS_PEAK == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          echo "Executing Autonomous Fresh Wave Publisher..."
           python publish_fresh_wave_now.py
