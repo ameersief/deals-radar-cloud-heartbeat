@@ -1,4 +1,4 @@
-name: 24/7 Cloud Heartbeat & Live Deals Hunter
+name: 24/7 Cloud Heartbeat & Live Deals Publisher
 
 on:
   schedule:
@@ -7,37 +7,32 @@ on:
   workflow_dispatch:
 
 jobs:
-  heartbeat:
-    name: Ping Render & Hunt Live Deals
+  heartbeat_and_publish:
+    name: Keep Alive & Autonomous Deal Publishing
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 1. Keep Render Awake (Healthcheck Ping)
+      - name: 1. Keep Render Concierge Awake (Healthcheck Ping)
         run: |
           echo "Pinging Render n8n healthz endpoint..."
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 30 "https://n8n-service-kgny.onrender.com/healthz" || true)
           echo "Render Healthcheck HTTP Status: $HTTP_CODE"
-          if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "Wake-up ping sent (container might be spinning up)."
-          else
-            echo "Render container is alive and healthy!"
-          fi
 
-      - name: 2. Check Dubai Golden Hours & Schedule Live Hunt
+      - name: 2. Check Dubai Golden Hours (GST = UTC+4)
         run: |
           CURRENT_HOUR=$(date -u +"%H")
           CURRENT_MIN=$(date -u +"%M")
           echo "Current UTC Time: $CURRENT_HOUR:$CURRENT_MIN"
           
-          # Dubai Daytime Golden Hours (GST = UTC+4):
-          # • 06:00 UTC = 10:00 AM Dubai (الصباح)
-          # • 10:00 UTC = 02:00 PM Dubai (استراحة الغداء)
-          # • 14:00 UTC = 06:00 PM Dubai (العصر ونهاية الدوام)
-          # • 17:00 UTC = 09:00 PM Dubai (السهرة والتسوق المسائي)
+          # Dubai Daytime Golden Hours:
+          # • 06:00 UTC = 10:00 AM Dubai
+          # • 10:00 UTC = 02:00 PM Dubai
+          # • 14:00 UTC = 06:00 PM Dubai
+          # • 17:00 UTC = 09:00 PM Dubai
           IS_PEAK="false"
-          if [[ ("$CURRENT_HOUR" == "06" || "$CURRENT_HOUR" == "10" || "$CURRENT_HOUR" == "14" || "$CURRENT_HOUR" == "17") && "$CURRENT_MIN" -lt 15 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ ("$CURRENT_HOUR" == "06" || "$CURRENT_HOUR" == "10" || "$CURRENT_HOUR" == "14" || "$CURRENT_HOUR" == "17") && "$CURRENT_MIN" -lt 20 ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "Dubai Daytime Peak Hour Detected!"
             IS_PEAK="true"
           else
@@ -45,7 +40,7 @@ jobs:
           fi
           echo "IS_PEAK=$IS_PEAK" >> $GITHUB_ENV
 
-      - name: Set up Python for Live Deal Hunter
+      - name: Set up Python for Live Deal Engine
         if: env.IS_PEAK == 'true'
         uses: actions/setup-python@v5
         with:
@@ -62,12 +57,13 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Starting Live Amazon.ae Deal Hunter across 8 categories..."
+          echo "Starting Live Amazon.ae Deal Hunter..."
           python daily_live_deal_hunter.py
 
-      - name: 4. Trigger Deals Publisher Wave
+      - name: 4. Publish Fresh Wave Directly to Telegram (Zero-Failure Engine)
         if: env.IS_PEAK == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "Triggering Deals Publisher Webhook on n8n..."
-          PUBLISH_RES=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -m 60 "https://n8n-service-kgny.onrender.com/webhook/publish-deal" || true)
-          echo "Publisher response: $PUBLISH_RES"
+          echo "Executing Autonomous Fresh Wave Publisher..."
+          python publish_fresh_wave_now.py
