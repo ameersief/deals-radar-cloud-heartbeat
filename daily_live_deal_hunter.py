@@ -4,6 +4,7 @@ Daily Live Deal Hunter & Real-Time Price Verifier
 Hunts 100% fresh, live Amazon.ae deals across the 8 Supergroup categories.
 Verifies discounts, stock status, and updates Neon PostgreSQL catalog.
 Dual-Engine: Uses psycopg2 or fallback to Neon HTTP REST API.
+Includes Bulletproof Unit Price Filtering (prevents /100ml or /kg price confusion).
 """
 import os, requests, bs4, re, sys, time, json
 from datetime import datetime
@@ -15,7 +16,6 @@ if not DATABASE_URL:
     print("WARNING: DATABASE_URL secret is not set in environment.")
     sys.exit(0)
 
-# Determine Neon HTTP URL & Headers from DATABASE_URL
 NEON_URL = "https://ep-raspy-salad-b4f4auzs.c-6.us-east-2.aws.neon.tech/sql"
 NEON_HEADERS = {
     'Neon-Connection-String': DATABASE_URL,
@@ -91,6 +91,46 @@ def escape_sql(text):
     escaped = text.replace("'", "''")
     return f"'{escaped}'"
 
+def extract_accurate_prices(item_element):
+    """
+    Extracts current price and genuine original strikethrough price.
+    CRITICAL: Strictly excludes unit prices like '/100 ml', '/kg', 'pricePerUnit'.
+    """
+    # 1. Deal Price: XL price or non-strike price
+    cur_el = item_element.select_one('.a-price[data-a-size="xl"] .a-offscreen') or item_element.select_one('.a-price:not(.a-text-price) .a-offscreen')
+    current = clean_num(cur_el.get_text(strip=True)) if cur_el else 0.0
+    if current < 10.0:
+        return None, None, None
+
+    # 2. Original Strikethrough Price: strictly data-a-strike="true"
+    orig = 0.0
+    strike_el = (
+        item_element.select_one('.a-price[data-a-strike="true"] .a-offscreen') or 
+        item_element.select_one('span[data-a-strike="true"] .a-offscreen') or
+        item_element.select_one('.a-text-price[data-a-strike="true"] .a-offscreen')
+    )
+    if strike_el:
+        orig = clean_num(strike_el.get_text(strip=True))
+
+    # 3. Fallback: inspect prices, ignoring anything inside unit-price spans
+    if orig == 0.0:
+        for p in item_element.select('.a-price .a-offscreen'):
+            parent_text = p.parent.parent.get_text(strip=True) if p.parent and p.parent.parent else ""
+            if '/' in parent_text or 'per' in parent_text.lower():
+                continue
+            val = clean_num(p.get_text(strip=True))
+            if val > current:
+                orig = val
+                break
+
+    # 4. Strict Sanity Filter: Real discounts on consumer goods are between 15% and 75%
+    if orig > current:
+        disc = round(((orig - current) / orig) * 100)
+        if 15 <= disc <= 75:
+            return current, orig, disc
+
+    return None, None, None
+
 def hunt_category_deals(category, queries, max_per_category=4):
     found = []
     seen = set()
@@ -110,40 +150,37 @@ def hunt_category_deals(category, queries, max_per_category=4):
                     continue
                 seen.add(asin)
 
-                prices = [p.get_text(strip=True) for p in it.select('.a-price .a-offscreen')]
-                if len(prices) >= 2:
-                    current = clean_num(prices[0])
-                    orig = clean_num(prices[1])
-                    if orig > current > 15:
-                        disc = round(((orig - current) / orig) * 100)
-                        if disc >= 15:
-                            h2 = it.select_one('h2')
-                            title = h2.get_text(strip=True) if h2 else ""
-                            if not title or len(title) < 15:
-                                continue
+                current, orig, disc = extract_accurate_prices(it)
+                if not current or not orig or not disc:
+                    continue
 
-                            img_el = it.select_one('img.s-image')
-                            img = img_el.get('src') if img_el else ""
-                            if img:
-                                img = re.sub(r'_[A-Z0-9,]+_\.', '_AC_SL1200_.', img)
+                h2 = it.select_one('h2')
+                title = h2.get_text(strip=True) if h2 else ""
+                if not title or len(title) < 15:
+                    continue
 
-                            savings = orig - current
-                            badge = f"خصم {disc}% حقيقي"
+                img_el = it.select_one('img.s-image')
+                img = img_el.get('src') if img_el else ""
+                if img:
+                    img = re.sub(r'_[A-Z0-9,]+_\.', '_AC_SL1200_.', img)
 
-                            found.append({
-                                'asin': asin,
-                                'title': title,
-                                'deal_price': current,
-                                'original_price': orig,
-                                'discount_pct': disc,
-                                'savings': savings,
-                                'category': category,
-                                'image_url': img,
-                                'badge_label': badge,
-                                'affiliate_url': f"https://www.amazon.ae/dp/{asin}?tag=lamha0e-21"
-                            })
-                            if len(found) >= max_per_category:
-                                break
+                savings = orig - current
+                badge = f"خصم {disc}% حقيقي"
+
+                found.append({
+                    'asin': asin,
+                    'title': title,
+                    'deal_price': current,
+                    'original_price': orig,
+                    'discount_pct': disc,
+                    'savings': savings,
+                    'category': category,
+                    'image_url': img,
+                    'badge_label': badge,
+                    'affiliate_url': f"https://www.amazon.ae/dp/{asin}?tag=lamha0e-21"
+                })
+                if len(found) >= max_per_category:
+                    break
             time.sleep(1)
         except Exception as e:
             print(f"  [Scrape Warning on query '{q}'] {e}")
@@ -151,20 +188,23 @@ def hunt_category_deals(category, queries, max_per_category=4):
 
 def main():
     print("=" * 60)
-    print("🚀 LIVE REFRESH & DEAL HUNT FOR AMAZON.AE")
+    print("🚀 ACCURATE LIVE REFRESH & DEAL HUNT FOR AMAZON.AE")
     print(f"Timestamp: {datetime.now().isoformat()}")
     print("=" * 60)
 
-    # 1. Refresh active deals verified_at
+    # 1. Clean any historical unit-price anomalies
+    execute_sql("UPDATE amazon_deals_catalog SET is_active = FALSE WHERE discount_pct > 75;")
+
+    # 2. Refresh active deals verified_at
     print("1. Refreshing verification timestamps for active catalog deals...")
     execute_sql("""
         UPDATE amazon_deals_catalog
         SET verified_at = NOW(),
             is_active = TRUE
-        WHERE is_active = TRUE AND discount_pct >= 15;
+        WHERE is_active = TRUE AND discount_pct >= 15 AND discount_pct <= 75;
     """)
 
-    # 2. Hunt fresh deals
+    # 3. Hunt fresh deals
     total_added = 0
     total_updated = 0
 
