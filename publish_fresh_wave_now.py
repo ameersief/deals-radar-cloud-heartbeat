@@ -4,10 +4,11 @@ Intelligent Autonomous Deals Wave Publisher (Zero-Failure Cloud Engine)
 Features:
 1. Golden Window Gate: Only publishes during Dubai daytime peak windows (10:00 AM, 02:00 PM, 06:00 PM, 09:00 PM GST).
 2. Anti-Duplicate / Anti-Miss Gate: Guarantees exactly 1 wave per window, immune to GitHub Actions cron latency.
-3. Zero-Stale Policy: Only publishes in-stock deals with >= 15% discount verified within 48h.
-4. Dual Distribution: Posts to Telegram Channel (@deals_radar_arabic) & 8 Forum Topics.
+3. Auto-Healing: If fresh deals are low (<16), automatically invokes daily_live_deal_hunter.
+4. Zero-Stale Policy: Only publishes in-stock deals with >= 15% discount verified within 48h.
+5. Dual Distribution: Posts to Telegram Channel (@deals_radar_arabic) & 8 Forum Topics.
 """
-import os, sys, time, json, ssl, urllib.request, urllib.parse
+import os, sys, time, json, ssl, urllib.request, urllib.parse, requests
 from datetime import datetime, timezone
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -17,6 +18,12 @@ if not DATABASE_URL:
     print("Error: DATABASE_URL not set in environment.")
     sys.exit(0)
 
+NEON_URL = "https://ep-raspy-salad-b4f4auzs.c-6.us-east-2.aws.neon.tech/sql"
+NEON_HEADERS = {
+    'Neon-Connection-String': DATABASE_URL,
+    'Content-Type': 'application/json'
+}
+
 FORCE_PUBLISH = os.getenv('FORCE_PUBLISH', 'false').lower() == 'true'
 
 BOT_TOKEN = "7979623898:AAHuCqpZj9XR-bPTiDFTVm5nyrif9l2t9Rk"
@@ -24,7 +31,13 @@ CHANNEL_ID = "@deals_radar_arabic"
 SUPERGROUP_ID = "-1004395158397"
 ctx = ssl.create_default_context()
 
-def check_publishing_window(cur):
+def query_sql(q):
+    res = requests.post(NEON_URL, headers=NEON_HEADERS, json={'query': q})
+    if res.status_code != 200:
+        raise Exception(f"SQL Error {res.status_code}: {res.text}")
+    return res.json().get('rows', [])
+
+def check_publishing_window():
     """
     Checks if current time is within Dubai Golden Hours and if a wave is already sent.
     Dubai is UTC+4.
@@ -61,15 +74,17 @@ def check_publishing_window(cur):
         return False, "outside_window"
 
     # Check last wave publication time in Neon DB
-    cur.execute("SELECT MAX(last_posted_at) FROM amazon_deals_catalog;")
-    row = cur.fetchone()
-    last_posted = row[0] if row else None
+    rows = query_sql("SELECT MAX(last_posted_at) as last_posted FROM amazon_deals_catalog;")
+    last_posted_str = rows[0].get('last_posted') if rows else None
 
-    if last_posted:
+    if last_posted_str:
+        # Parse timestamp
+        clean_ts = last_posted_str.split('+')[0].replace('Z', '')
+        last_posted = datetime.fromisoformat(clean_ts).replace(tzinfo=timezone.utc)
         diff_seconds = (now_utc - last_posted).total_seconds()
         diff_hours = diff_seconds / 3600.0
-        # If published less than 2.2 hours ago, wave already completed
-        if diff_hours < 2.2:
+        # If published less than 2.0 hours ago, wave already completed
+        if diff_hours < 2.0:
             print(f"✅ {current_window_name} was already published {diff_hours:.1f} hours ago (at {last_posted}). Skipping to avoid duplication.")
             return False, "already_published"
 
@@ -77,22 +92,30 @@ def check_publishing_window(cur):
     return True, current_window_name
 
 def main():
-    import psycopg2
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-
-        should_publish, reason = check_publishing_window(cur)
+        should_publish, reason = check_publishing_window()
         if not should_publish:
-            conn.close()
             sys.exit(0)
 
-        # Pull community topics
-        cur.execute("SELECT topics FROM community_groups LIMIT 1;")
-        row = cur.fetchone()
-        topics = row[0] if row else {}
+        # 1. Self-Healing: Verify active fresh catalog count
+        count_rows = query_sql("""
+            SELECT COUNT(*) as fresh_count 
+            FROM amazon_deals_catalog 
+            WHERE is_active = TRUE AND (verified_at >= NOW() - INTERVAL '48 hours' OR verified_at IS NULL);
+        """)
+        fresh_count = int(count_rows[0].get('fresh_count', 0)) if count_rows else 0
+        if fresh_count < 16:
+            print(f"⚠️ Fresh deals count is low ({fresh_count} available). Running live hunter now...")
+            import daily_live_deal_hunter
+            daily_live_deal_hunter.main()
 
-        # Query top 1 deal from each category (ordered by least posted, then freshest verification)
+        # 2. Pull community topics
+        grp_rows = query_sql("SELECT topics FROM community_groups LIMIT 1;")
+        topics = grp_rows[0].get('topics', {}) if grp_rows else {}
+        if isinstance(topics, str):
+            topics = json.loads(topics)
+
+        # 3. Query top 1 deal from each category (least posted first, newest verification, never posted prioritized)
         query = """
         SELECT DISTINCT ON (category) 
             asin, title, deal_price, original_price, discount_pct, savings, image_url, category, badge_label
@@ -100,21 +123,23 @@ def main():
         WHERE is_active = TRUE AND (verified_at >= NOW() - INTERVAL '48 hours' OR verified_at IS NULL)
         ORDER BY category, posted_count ASC, verified_at DESC, last_posted_at ASC NULLS FIRST;
         """
-        cur.execute(query)
-        deals = cur.fetchall()
+        deals = query_sql(query)
 
         print(f"Discovered {len(deals)} verified deals ready for distribution.")
         if not deals:
             print("No active deals found matching zero-stale criteria.")
-            conn.close()
             sys.exit(0)
 
         published_asins = []
 
         for d in deals:
-            asin, title, current, original, disc, sav, img, cat, badge = d
-            current = float(current)
-            original = float(original)
+            asin = d['asin']
+            title = d['title']
+            current = float(d['deal_price'])
+            original = float(d['original_price'])
+            disc = int(d['discount_pct'])
+            img = d['image_url']
+            cat = d['category']
 
             # Clean Arabic title
             short_title = title.split('،')[0].split('-')[0].strip()
@@ -187,17 +212,15 @@ def main():
             time.sleep(1.2)
 
         if published_asins:
-            cur.execute("""
+            asin_list_sql = ", ".join([f"'{a}'" for a in published_asins])
+            query_sql(f"""
                 UPDATE amazon_deals_catalog
                 SET posted_count = posted_count + 1,
                     last_posted_at = NOW(),
                     is_published = TRUE
-                WHERE asin = ANY(%s)
-            """, (published_asins,))
-            conn.commit()
+                WHERE asin IN ({asin_list_sql});
+            """)
             print(f"🎉 Successfully published wave of {len(published_asins)} deals across Channel & Forum!")
-
-        conn.close()
 
     except Exception as err:
         print(f"Publisher error: {err}")
