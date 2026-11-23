@@ -6,6 +6,7 @@ Integrates:
 - amazon-deal-finder (unit price exclusion, genuine discount filtering 15-75%, CDN health)
 - telegram-assistant-skill (HTML escaping, native Telegram share, WhatsApp share, length guards)
 - Fault-Tolerant Failover: Automatically switches to Autonomous Live Scraper + SQLite tracking if Neon DB hits quota (HTTP 402)
+- UAE Geo-Pinning: Strictly forces Amazon.ae UAE regional delivery & currency
 """
 import os, sys, time, json, ssl, re, urllib.request, urllib.parse, sqlite3, requests, bs4
 from datetime import datetime, timezone
@@ -48,7 +49,8 @@ CATEGORY_QUERIES = {
 
 HEADERS_AMAZON = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Language': 'en-AE,en;q=0.9,ar-AE;q=0.8,ar;q=0.7',
+    'Cookie': 'sp-cdn="L5Z9:AE"; lc-acbae=en_AE; i18n-prefs=AED;',
 }
 
 ctx = ssl.create_default_context()
@@ -173,7 +175,7 @@ def hunt_category_deal_live(category, queries, sqlite_conn):
                     'image_url': img,
                     'affiliate_url': f"https://www.amazon.ae/dp/{asin}?tag=lamha0e-21"
                 }
-            time.sleep(1)
+            time.sleep(0.5)
         except Exception as e:
             print(f"Scrape warning on query '{q}': {e}")
     return None
@@ -353,7 +355,6 @@ def main():
         for d in deals_to_publish:
             publish_deal_to_telegram(d)
             published_asins.append(d['asin'])
-            # Record in SQLite history
             record_posted_asin_sqlite(
                 sqlite_conn, d['asin'], d['title'], d['category'],
                 float(d['deal_price']), float(d['original_price']), int(d['discount_pct'])
