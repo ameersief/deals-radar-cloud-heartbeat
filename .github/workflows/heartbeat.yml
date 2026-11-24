@@ -30,6 +30,14 @@ jobs:
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 30 "https://n8n-service-kgny.onrender.com/healthz" || true)
           echo "Render Healthcheck HTTP Status: $HTTP_CODE"
 
+      - name: 1.1 Keep WhatsHide Supabase Database Awake (Healthcheck Ping)
+        run: |
+          echo "Pinging Supabase WhatsHide-Licensing database..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 30 \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxemh4ampocHVnd2hvaHVobGhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0MDA2MDcsImV4cCI6MjEwMDk3NjYwN30.9VBeRDqohynd8de6nW4bY1Waq5ePOroggog_ZO2RWfI" \
+            "https://dqzhxjjhpugwhohuhlhd.supabase.co/rest/v1/license_activations?select=license_key&limit=1" || true)
+          echo "Supabase Healthcheck HTTP Status: $HTTP_CODE"
+
       - name: Set up Python for Live Deal Engine
         uses: actions/setup-python@v5
         with:
